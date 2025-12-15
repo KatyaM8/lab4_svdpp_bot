@@ -34,12 +34,15 @@ class SVDPPConfig:
     shuffle: bool = True
     verbose: bool = True
 
-    # если рейтинги ограничены, можно клипать предсказание
     clip_min: Optional[float] = 1.0
     clip_max: Optional[float] = 5.0
 
 
 class SVDPPModel:
+    """
+    Модель рекомендаций SVD++
+    """
+
     """
     SVD++ 
 
@@ -77,7 +80,7 @@ class SVDPPModel:
         self.idx2user: List[Any] = []
         self.idx2item: List[Any] = []
 
-        # параметры (это то, что учим)
+        # параметры 
         self.mu: float = 0.0
         self.bu: Optional[np.ndarray] = None   # (n_users,)
         self.bi: Optional[np.ndarray] = None   # (n_items,)
@@ -95,27 +98,33 @@ class SVDPPModel:
     # --------------------------
 
     def fit(self, ratings: Sequence[Tuple[Any, Any, float]]) -> "SVDPPModel":
-        """
-        ratings: список троек (user_id, item_id, rating)
-
-        Пример:
-            [("u1","i5", 4.0), ("u2","i1", 5.0), ...]
-        """
+        # ВХОД:
+        #   ratings — список (user_id, item_id, rating)
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   строит маппинги пользователей и фильмов
+        #   считает среднюю оценку mu
+        #   инициализирует параметры модели
+        #   строит историю взаимодействий N(u)
+        #   обучает модель с помощью SGD
+        #
+        # ВЫХОД:
+        #   возвращает self (обученную модель)
         if len(ratings) == 0:
             raise ValueError("ratings пустой — обучать нечего")
 
         # 1) строим маппинги user/item -> индекс
         self._build_mappings(ratings)
 
-        n_users = len(self.idx2user)
-        n_items = len(self.idx2item)
-        k = self.cfg.n_factors
+        n_users = len(self.idx2user) #ск пользователей
+        n_items = len(self.idx2item) #ск фильмов
+        k = self.cfg.n_factors #размер латентного вектора
 
-        # 2) mu — глобальная средняя оценка (обычно её не обучают, просто считаем)
+        # 2) mu — глобальная средняя оценка 
         self.mu = float(np.mean([r for _, _, r in ratings]))
 
         # 3) инициализируем параметры
-        self.bu = np.zeros(n_users, dtype=np.float64)
+        self.bu = np.zeros(n_users, dtype=np.float64) 
         self.bi = np.zeros(n_items, dtype=np.float64)
 
         self.pu = self.rng.normal(0.0, self.cfg.init_std, size=(n_users, k)).astype(np.float64)
@@ -125,7 +134,7 @@ class SVDPPModel:
         # 4) строим историю N(u) по train
         self.Nu = self._build_Nu(ratings, n_users)
 
-        # 5) переводим ratings в индексный вид (быстрее, чем хранить строки)
+        # 5) переводим ratings в индексный вид 
         data = [(self.user2idx[u], self.item2idx[i], float(r)) for (u, i, r) in ratings]
 
         # 6) SGD по эпохам
@@ -136,13 +145,12 @@ class SVDPPModel:
             se = 0.0  # sum squared error (для rmse)
 
             for (u, i, r) in data:
-                # rmse считаем до апдейта (чисто для вывода)
-                pred = self._predict_idx(u, i)
-                e_for_rmse = (r - pred)
+                pred = self._predict_idx(u, i) #считаем предсказание 
+                e_for_rmse = (r - pred) #считаем ошибку
                 se += e_for_rmse * e_for_rmse
 
                 # основной шаг обучения
-                self._sgd_step(u, i, r)
+                self._sgd_step(u, i, r) 
 
             rmse = float(np.sqrt(se / len(data)))
             if self.cfg.verbose:
@@ -185,9 +193,6 @@ class SVDPPModel:
         """
         return np.array([self.predict_single(u, i) for (u, i) in pairs], dtype=np.float64)
 
-    # --------------------------
-    # Внутренние штуки
-    # --------------------------
 
     def _build_mappings(self, ratings: Sequence[Tuple[Any, Any, float]]) -> None:
         # Заполняем user2idx / item2idx в порядке первого появления (без сортировок).
@@ -237,9 +242,21 @@ class SVDPPModel:
         return self._clip(r_hat)
 
     def _sgd_step(self, u: int, i: int, r: float) -> None:
-        """
-        Один шаг SGD по одному примеру (u,i,r).
-        """
+        # ВХОД:
+        #   u — индекс пользователя (не user_id, а уже индекс из маппинга)
+        #   i — индекс фильма (не item_id, а индекс)
+        #   r — реальная оценка пользователя u фильму i
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - считает предсказание r_hat для (u, i)
+        #   - считает ошибку e = r - r_hat
+        #   - делает один шаг обучения SGD:
+        #       обновляет bu[u], bi[i], pu[u], qi[i]
+        #       и обновляет yj[j] для всех фильмов j из истории пользователя Nu[u]
+        #     (регуляризация reg уменьшает параметры, чтобы они не раздувались)
+        #
+
+        #берём настройки обучения
         lr = self.cfg.lr
         reg = self.cfg.reg
 
@@ -253,6 +270,8 @@ class SVDPPModel:
             su = np.zeros(self.cfg.n_factors, dtype=np.float64)
 
         xu = self.pu[u] + su
+        #pu[u] - личный вектор пользователя (его вкусы)
+        #su -что говорит история
 
         # 2) прогноз и ошибка
         r_hat = self.mu + self.bu[u] + self.bi[i] + float(np.dot(self.qi[i], xu))
@@ -290,6 +309,23 @@ class SVDPPModel:
         return float(x)
     
     def recommend_for_user(self, user_id, n=5):
+        # ВХОД:
+        #   user_id — идентификатор пользователя, для которого мы хотим сделать рекомендации
+        #   n — количество фильмов, которые нужно порекомендовать (по умолчанию 5)
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - проверяет, обучена ли модель (если нет, вызывает ошибку)
+        #   - проверяет, есть ли пользователь в модели
+        #   - собирает список фильмов, которые пользователь ещё не оценивал
+        #   - для каждого фильма, который не был оценён, предсказывает рейтинг
+        #   - сортирует фильмы по предсказанным рейтингам
+        #   - выбирает топ-N фильмов
+        #   - возвращает реальные идентификаторы этих фильмов с их предсказанным рейтингом
+        #
+        # ВЫХОД:
+        #   Список из N кортежей (item_id, score), где:
+        #     - item_id - реальный идентификатор фильма
+        #     - score - предсказанный рейтинг этого фильма для пользователя
         if not self.fitted:
             raise RuntimeError("fit() first")
 
@@ -313,6 +349,20 @@ class SVDPPModel:
         return [(self.idx2item[i], score) for i, score in top]
     
     def add_user(self, user_id: Any) -> int:
+        # ВХОД:
+        #   user_id - реальный id пользователя (например telegram id)
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - если пользователь уже есть в маппинге user2idx, возвращает его индекс
+        #   - если пользователя нет:
+        #       добавляет его в user2idx и idx2user
+        #       расширяет параметры пользователя:
+        #         bu (добавляет 0.0)
+        #         pu (добавляет новый случайный вектор)
+        #       добавляет пустую историю Nu[u]
+        #
+        # ВЫХОД:
+        #   int - индекс пользователя u (который используется в массивах numpy)
         if user_id in self.user2idx:
             return self.user2idx[user_id]
 
@@ -331,6 +381,18 @@ class SVDPPModel:
         return u
     
     def add_user_rating(self, user_id: Any, item_id: Any, rating: float) -> None:
+        # ВХОД:
+        #   user_id — id пользователя
+        #   item_id — id фильма
+        #   rating — оценка (в этой версии внутри модели почти не сохраняется)
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - проверяет, что модель уже обучена (fit() был вызван)
+        #   - добавляет пользователя, если его ещё нет (через add_user)
+        #   - проверяет, что фильм известен модели
+        #   - добавляет фильм в историю Nu[u] (без дубликатов)
+        #   - НЕ сохраняет сам рейтинг внутри модели (его хранит бот)
+
         if not self.fitted:
             raise RuntimeError("Сначала fit(), потом можно добавлять пользователей/оценки.")
 
@@ -353,12 +415,39 @@ class SVDPPModel:
         # их будет хранить бот (в памяти/БД) и потом передаст в finetune_user()
 
     def can_recommend(self, user_id: Any, min_ratings: int = 5) -> bool:
+        # ВХОД:
+        #   user_id - id пользователя
+        #   min_ratings -сколько фильмов минимум должно быть в истории пользователя
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - проверяет, что пользователь есть в модели
+        #   - проверяет, что длина истории Nu[u] >= min_ratings
+        #
+        # ВЫХОД:
+        #   bool - True если можно рекомендовать, иначе False
         if user_id not in self.user2idx:
             return False
         u = self.user2idx[user_id]
         return len(self.Nu[u]) >= min_ratings
 
     def recommend_for_user(self, user_id: Any, n: int = 5, min_ratings: int = 5):
+        # ВХОД:
+        #   user_id - id пользователя
+        #   n — сколько рекомендаций вернуть
+        #   min_ratings - минимум оценённых/просмотренных фильмов перед рекомендациями
+        #
+        # ЧТО ДЕЛАЕТ:
+        #   - проверяет, что модель обучена
+        #   - проверяет, что пользователь существует
+        #   - проверяет, что у пользователя достаточно истории (Nu[u])
+        #   - для всех фильмов, которые пользователь ещё не видел:
+        #       считает предсказанный рейтинг
+        #   - сортирует по рейтингу и возвращает top-n
+        #
+        # ВЫХОД:
+        #   list[(item_id, score)] — список рекомендаций:
+        #     item_id - реальный id фильма
+        #     score - предсказанная оценка
         if not self.fitted:
             raise RuntimeError("fit() first")
 
@@ -389,6 +478,24 @@ class SVDPPModel:
         lr: Optional[float] = None,
         reg: Optional[float] = None,
     ) -> None:
+    # ВХОД:
+    #   user_id - id пользователя
+    #   user_ratings - список оценок пользователя: [(user_id, item_id, rating), ...]
+    #   n_epochs - сколько эпох дообучать пользователя
+    #   lr - learning rate (если None, берётся из cfg)
+    #   reg - регуляризация (если None, берётся из cfg)
+    #
+    # ЧТО ДЕЛАЕТ:
+    #   - проверяет, что модель обучена
+    #   - добавляет пользователя, если его ещё нет
+    #   - переводит item_id в индексы и формирует prepared = [(i_idx, rating), ...]
+    #   - обновляет историю Nu[u], чтобы implicit часть работала
+    #   - делает несколько эпох обучения, обновляя ТОЛЬКО параметры пользователя:
+    #       bu[u] и pu[u]
+    #     (фильмы и yj не трогает)
+    #
+    # ВЫХОД:
+    #   ничего (None), но изменяет bu[u] и pu[u] для этого пользователя
         if not self.fitted:
             raise RuntimeError("Сначала fit().")
 

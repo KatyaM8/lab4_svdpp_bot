@@ -148,6 +148,18 @@ async def cmd_pick(message: Message) -> None:
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
+    """
+    ВХОД:
+        message (Message) — сообщение от пользователя с командой /status
+
+    ЧТО ДЕЛАЕТ:
+        Обрабатывает команду /status.
+        Определяет количество оценок, которые пользователь уже поставил,
+        и сообщает эту информацию пользователю.
+
+    ВЫХОД:
+        None — функция ничего не возвращает, но отправляет сообщение пользователю
+    """
     tg_user_id = message.from_user.id
     ensure_user(tg_user_id) #если пользователь новый, создаём для него пустые структуры
     cnt = len(USER_RATINGS[tg_user_id]) #считаем количество оценок, которые пользователь уже поставил
@@ -156,6 +168,26 @@ async def cmd_status(message: Message) -> None:
 
 @router.message(Command("rate"))
 async def cmd_rate(message: Message) -> None:
+    """
+    ВХОД:
+        message (Message) — сообщение от пользователя с командой вида:
+            /rate <movie_id> <rating>
+        где:
+            movie_id — int (id фильма из датасета)
+            rating — число от 1 до 5
+
+    ЧТО ДЕЛАЕТ:
+        1) Проверяет, что модель обучена и готова.
+        2) Парсит команду /rate и проверяет корректность введённых данных.
+        3) Сохраняет оценку пользователя в память бота (USER_RATINGS).
+        4) Обновляет историю взаимодействий пользователя в модели (N(u)).
+        5) Когда пользователь набрал MIN_RATINGS оценок, дообучает его профиль
+           (finetune_user), чтобы рекомендации стали персональными.
+
+    ВЫХОД:
+        None — функция ничего не возвращает, но отправляет сообщения пользователю.
+    """
+    
     global MODEL
     tg_user_id = message.from_user.id
     ensure_user(tg_user_id)
@@ -187,12 +219,13 @@ async def cmd_rate(message: Message) -> None:
     # сохраняем оценку
     USER_RATINGS[tg_user_id].append((tg_user_id, movie_id, rating))
 
-    # обновляем историю N(u) в модели
+    # обновляем историю пользователя N(u) в модели
     MODEL.add_user_rating(tg_user_id, movie_id, rating)
-
+    # сообщаем текущий прогресс пользователю
     cnt = len(USER_RATINGS[tg_user_id])
     await message.answer(f"Ок! {title_of(movie_id)} = {rating}. Всего оценок: {cnt}.")
 
+    #Если набрано 5 оценок — дообучаем профиль пользователя
     if cnt == MIN_RATINGS:
         MODEL.finetune_user(tg_user_id, USER_RATINGS[tg_user_id], n_epochs=10)
         await message.answer("Супер! 5 оценок есть — профиль донастроен. Теперь /recommend.")
@@ -202,6 +235,21 @@ async def cmd_rate(message: Message) -> None:
 
 @router.message(Command("recommend"))
 async def cmd_recommend(message: Message) -> None:
+    """
+    ВХОД:
+        message (Message) — сообщение от пользователя с командой /recommend
+
+    ЧТО ДЕЛАЕТ:
+        Обрабатывает команду /recommend.
+        Проверяет, что модель обучена и пользователь поставил минимум
+        MIN_RATINGS оценок.
+        Вычисляет персональные рекомендации с помощью модели SVD++
+        и отправляет пользователю список рекомендованных фильмов
+        с предсказанными рейтингами.
+
+    ВЫХОД:
+        None — функция ничего не возвращает, но отправляет сообщение пользователю
+    """
     global MODEL
     tg_user_id = message.from_user.id
     ensure_user(tg_user_id)
@@ -226,6 +274,15 @@ async def cmd_recommend(message: Message) -> None:
 
 
 async def main() -> None:
+    """
+    Основная функция приложения.
+
+    Выполняет:
+    1) загрузку датасета MovieLens,
+    2) обучение модели SVD++,
+    3) инициализацию Telegram-бота,
+    4) запуск бота в режиме ожидания сообщений.
+    """
     global MODEL, TITLES
     print("Bot is running...")
 
